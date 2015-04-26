@@ -1,0 +1,132 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Takafumi Yamaguchi"
+date: "April 26, 2015"
+output: html_document
+---
+
+First of all, load caret package. Then, read the train data and test data and see how they look like. (empty cells as NA)
+
+```{r}
+library(caret)
+
+train_original <- read.csv("pml-training.csv", na.strings=c("NA","NaN", "", "",  '#DIV/0!')); 
+dim(train_original); #19622   160
+
+submit_original <- read.csv("pml-testing.csv", na.strings=c("NA","NaN", "", "",  '#DIV/0!')); 
+dim(submit_original); #20   160
+
+```
+
+
+Many variables in the "pml-testing.csv" are NAs and can not be used to predict results (i.e. classe variable).
+Therefore, these variables have to be removed from the train and test dataset.
+
+To do so, nearZeroVar() was used. This also checks variables with near zero variance.
+
+
+```{r}
+nsv_submit <- nearZeroVar(submit_original, saveMetrics=T); # Check if there are zero covariates
+
+train <- train_original[,nsv_submit$nzv=="FALSE"]; # Get only non-zero covariates
+submit <- submit_original[,nsv_submit$nzv=="FALSE"]; # Get only non-zero covariates
+```
+
+
+In addition, variables that would not be related to the results were removed. (i.e X - num of rows, timestamps)
+
+
+```{r}
+
+train_clean <- subset(train, select=-c(X,user_name,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp))
+submit_clean <- subset(submit, select=-c(X,user_name,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp))
+
+dim(train_clean)
+
+```
+
+
+This preprocess reduced the number of variables from 160 to 54.
+
+Now split the train data into train and test data since the 'real' test data (sumbission data) can not be used for checking the accuracy of a model.
+
+
+```{r}
+inTrain <- createDataPartition(y=train_clean$classe, p=0.7, list=FALSE)
+
+training <- train_clean[inTrain,]
+testing <- train_clean[-inTrain,]
+```
+
+
+To further select features and reduce demensions, highly correlated features (>0.8) were removed. findCorrelation() looks at the
+mean absolute correlation of each of the correlated variable and removes the variable with the largest mean absolute correlation.
+As a result, 12 features were removed. 41 features were used to create an initial model.
+
+```{r}
+descrCorr <- cor(training[,-54])
+highCorr <- findCorrelation(descrCorr, 0.80);
+#12 features were found
+trainDescr <- training[, -highCorr]
+testDescr <- testing[, -highCorr]
+submit_clean_final <- submit_clean[,-highCorr]
+```
+
+
+Cross-validation was used to improve the accuracy (i.e. to avoid overfitting) of model estimates and further feature selections. (To reduce computational burdern, 3-fold cross validation was used but repetated 10-fold corss validation would perform better (repeated 10 times, for example))
+
+
+```{r}
+fitControl <- trainControl(## 3-fold CV
+                           method = "cv",
+                           number = 3,
+                        	)
+```
+
+
+Random forest was used to create a model since this data was created from multiple sensor activity recognitions and probably a non-linar problem (classifying proper activity vs several types of mistakes). I tried number of different methods (bagging, boosting, etc) but random forest performed the best. ntree was set to 100 (default is 500) due to the heavy computational power and the size of the dataset.
+
+
+```{r}
+
+modFit_rf <- train(classe ~ ., data=trainDescr, trControl=fitControl, method="rf", ntree=100, importance=TRUE)
+
+modFit_rf
+```
+
+And now fit the model to the test dataset.
+
+```{r}
+
+pred_rf <- predict(modFit_rf, testDescr)
+confusionMatrix(testDescr$classe, pred_rf)
+varImp(modFit_rf, scale=FALSE)
+
+```
+
+
+confusionMatrix() function showed really high accuracy. (close to 1)
+Also, varImp() was used to see which features are important.
+I could've further selected features based on this varImp (for example, take the top 15 features and re-create a model - this process is called 'backtracking') but I just used the model to predict the submission test data as the accuracy of this model is nearly 1.
+
+Regarding the out of sample error, the out of sample error is always larger than that of in-sample error. Howerver, in this case, the model was built using a large dataset and the accuracy is almost 1. Thus, this model is safe enough to apply for the submission test data. In other words, the accuracy of this model is high to predict 20 out of sample cases even though the out of sample error is higher than in sample error. 
+
+
+Lastly, I fit the model to the submission test data and was able to correctly predict the 'classe' for the 20 sumbissions. (scored 20/20) 
+
+
+```{r}
+pred_rf_answers <- predict(modFit_rf, submit_clean_final)
+ 
+#used the provided function to create submission files.
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+#run the function
+pml_write_files(pred_rf_answers)
+#and submit the results
+```
